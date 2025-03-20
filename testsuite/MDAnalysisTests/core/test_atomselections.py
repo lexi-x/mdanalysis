@@ -33,6 +33,7 @@ import pytest
 from MDAnalysis import SelectionError, SelectionWarning
 from MDAnalysis.core.selection import Parser
 from MDAnalysis.lib.distances import distance_array
+from MDAnalysis.lib.NeighborSearch import PeriodicKDTree
 from MDAnalysis.tests.datafiles import (
     DCD,
     GRO,
@@ -1773,3 +1774,139 @@ def test_formal_charge_selection(sel, size, name):
 
     assert len(ag) == size
     assert ag.atoms[0].name == name
+
+class TestCylindricalSelectionsWithKDTree(object):
+    @pytest.fixture(scope="class")
+    def universe(self):
+        u = mda.Universe(PSF, DCD)
+        u.dimensions = [80.0, 80.0, 80.0, 90.0, 90.0, 90.0]
+        return u
+    
+    @pytest.fixture()
+    def kdtree(self, universe):
+        #Create a PeriodicKDTree with the universe coordinates
+        kdtree = PeriodicKDTree(box=universe.dimensions)
+        kdtree.set_coords(universe.atoms.positions, cutoff=15.0)
+        return kdtree
+    
+    def test_cylindrical_selection_with_kdtree(self, universe, kdtree):
+        # Define cylinder 
+        center = universe.atoms[0].position  # Use first atom as center
+        radius = 10.0
+        zmin, zmax = center[2] - 20.0, center[2] + 20.0
+        
+        # Use selection string for MDAnalysis selection
+        center_str = "{} {} {}".format(center[0], center[1], center[2])
+        sel_str = universe.select_atoms(f"cylin {center_str} {radius} {zmin} {zmax}")
+        
+        # Using KDTree find all atoms within the search radius with cutoff cylinder radius
+        assert kdtree.cutoff >= radius
+        
+        # Get all points within a sphere of radius from  center
+        indices = kdtree.search(center, radius)
+        
+        # Filter points
+        pos = universe.atoms.positions
+        mask_z = (zmin <= pos[indices, 2]) & (pos[indices, 2] <= zmax)
+        filtered_indices = indices[mask_z]
+        
+        # Double-check that all points are within cylinder
+        selected_pos = pos[filtered_indices]
+        dxy = np.sqrt((selected_pos[:, 0] - center[0])**2 + 
+                     (selected_pos[:, 1] - center[1])**2)
+        assert np.all(dxy <= radius)
+        
+        # Verify that selection agrees with MDAnalysis selection
+        assert_equal(
+            sorted(filtered_indices), 
+            sorted(sel_str.indices),
+            "PeriodicKDTree selection doesn't match MDAnalysis selection"
+        )
+    
+    def test_cylindrical_layer_with_kdtree(self, universe, kdtree):
+        #Test cylindrical layer selection with PeriodicKDTree
+        center = universe.atoms[0].position
+        inner_radius = 5.0
+        outer_radius = 10.0
+        zmin, zmax = center[2] - 15.0, center[2] + 15.0
+        
+        # Use selection string for MDAnalysis selection
+        center_str = "{} {} {}".format(center[0], center[1], center[2])
+        sel_str = universe.select_atoms(
+            f"cylinlayer {center_str} {inner_radius} {outer_radius} {zmin} {zmax}"
+        )
+        
+
+        assert kdtree.cutoff >= outer_radius, "KDTree cutoff must be >= outer radius"
+        indices = kdtree.search(center, outer_radius)
+        
+        # Filter the points 
+        pos = universe.atoms.positions
+        selected_pos = pos[indices]
+        dxy = np.sqrt((selected_pos[:, 0] - center[0])**2 + 
+                     (selected_pos[:, 1] - center[1])**2)
+        
+        # Apply radius and z-range filters
+        mask_r = (inner_radius <= dxy) & (dxy <= outer_radius)
+        mask_z = (zmin <= selected_pos[:, 2]) & (selected_pos[:, 2] <= zmax)
+        mask_combined = mask_r & mask_z
+        filtered_indices = indices[mask_combined]
+
+        assert_equal(
+            sorted(filtered_indices), 
+            sorted(sel_str.indices),
+            "PeriodicKDTree selection doesn't match MDAnalysis selection for cylindrical layer"
+        )
+    
+    def test_cylindrical_zone_with_kdtree(self, universe, kdtree):
+        #Test cylindrical zone selection with  PeriodicKDTree
+        group1 = universe.atoms[:10]  # First 10 atoms
+        group2 = universe.atoms[-10:]  # Last 10 atoms
+        
+        # Calculate centers
+        center1 = group1.center_of_mass()
+        center2 = group2.center_of_mass()
+        radius = 8.0
+        
+        # Use selection string for MDAnalysis selection
+        sel_str = universe.select_atoms(
+            f"cylinzone group1 group2 {radius}", 
+            group1=group1, group2=group2
+        )
+        
+        # Create vector
+        axis = center2 - center1
+        axis_length = np.linalg.norm(axis)
+        unit_axis = axis / axis_length
+        
+        # Generate points along  cylinder axis
+        num_points = max(2, int(axis_length / (radius * 0.5)))  # Sample points along axis
+        t_values = np.linspace(0, 1, num_points)
+        points_on_axis = np.array([center1 + t * axis for t in t_values])
+        
+        # For each point, search for atoms 
+        all_indices = []
+        for point in points_on_axis:
+            indices = kdtree.search(point, radius)
+            all_indices.extend(indices)
+        unique_indices = np.unique(all_indices)
+        
+        # Filter atoms within the cylindrical zone and calculate distance
+        pos = universe.atoms.positions
+        valid_indices = []
+        for idx in unique_indices:
+            v = pos[idx] - center1
+            proj = np.dot(v, unit_axis)
+            
+            # Check if projection is within segment bounds
+            if 0 <= proj <= axis_length:
+                d_perp = np.linalg.norm(v - proj * unit_axis)
+                if d_perp <= radius:
+                    valid_indices.append(idx)
+        
+        # Verify that selection agrees with MDAnalysis selection
+        assert_equal(
+            sorted(valid_indices), 
+            sorted(sel_str.indices),
+            "PeriodicKDTree selection doesn't match MDAnalysis selection for cylindrical zone"
+        )
