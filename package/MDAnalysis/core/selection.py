@@ -425,6 +425,7 @@ class SphericalZoneSelection(Selection):
 
 
 class CylindricalSelection(Selection):
+    token = "cysel"
     @return_empty_on_apply
     def _apply(self, group):
         sel = self.sel.apply(group)

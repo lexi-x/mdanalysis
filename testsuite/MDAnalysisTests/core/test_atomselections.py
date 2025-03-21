@@ -33,7 +33,7 @@ import pytest
 from MDAnalysis import SelectionError, SelectionWarning
 from MDAnalysis.core.selection import Parser
 from MDAnalysis.lib.distances import distance_array
-from MDAnalysis.lib.NeighborSearch import PeriodicKDTree
+from MDAnalysis.lib.pkdtree import PeriodicKDTree
 from MDAnalysis.tests.datafiles import (
     DCD,
     GRO,
@@ -1797,8 +1797,7 @@ class TestCylindricalSelectionsWithKDTree(object):
         
         # Use selection string for MDAnalysis selection
         center_str = "{} {} {}".format(center[0], center[1], center[2])
-        sel_str = universe.select_atoms(f"cylin {center_str} {radius} {zmin} {zmax}")
-        
+        sel_str = universe.select_atoms(f"cysel {center_str} {radius} {zmin} {zmax}")
         # Using KDTree find all atoms within the search radius with cutoff cylinder radius
         assert kdtree.cutoff >= radius
         
@@ -1830,21 +1829,17 @@ class TestCylindricalSelectionsWithKDTree(object):
         outer_radius = 10.0
         zmin, zmax = center[2] - 15.0, center[2] + 15.0
         
-        # Use selection string for MDAnalysis selection
+        # Use selection string for MDAnalysis selection along z axis
         center_str = "{} {} {}".format(center[0], center[1], center[2])
-        sel_str = universe.select_atoms(
-            f"cylinlayer {center_str} {inner_radius} {outer_radius} {zmin} {zmax}"
-        )
+        sel_str = universe.select_atoms(f"cylayer {inner_radius} {outer_radius} {zmin} {zmax} bynum 0-10000")
         
-
         assert kdtree.cutoff >= outer_radius, "KDTree cutoff must be >= outer radius"
         indices = kdtree.search(center, outer_radius)
         
         # Filter the points 
         pos = universe.atoms.positions
         selected_pos = pos[indices]
-        dxy = np.sqrt((selected_pos[:, 0] - center[0])**2 + 
-                     (selected_pos[:, 1] - center[1])**2)
+        dxy = np.sqrt((selected_pos[:, 0] - center[0])**2 + (selected_pos[:, 1] - center[1])**2)
         
         # Apply radius and z-range filters
         mask_r = (inner_radius <= dxy) & (dxy <= outer_radius)
@@ -1870,9 +1865,7 @@ class TestCylindricalSelectionsWithKDTree(object):
         
         # Use selection string for MDAnalysis selection
         sel_str = universe.select_atoms(
-            f"cylinzone group1 group2 {radius}", 
-            group1=group1, group2=group2
-        )
+            f"cyzone {min(center1, center2)} {max(center1, center2)} {radius}, bynum 0-10000")
         
         # Create vector
         axis = center2 - center1
